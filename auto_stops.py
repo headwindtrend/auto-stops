@@ -144,10 +144,10 @@ class AutoStopsListener(sublime_plugin.EventListener):
         # Update stopmarks
         view.erase_regions("stopmarks")
         stopmarks = []
-        if len(self.stops):
+        if self.stops and len(self.stops):
             for stop in self.stops:
                 stopmarks.append(sublime.Region(*stop["region"]))
-        if len(stopmarks):
+        if stopmarks and len(stopmarks):
             view.add_regions("stopmarks", stopmarks)
 
         # Preventive measure
