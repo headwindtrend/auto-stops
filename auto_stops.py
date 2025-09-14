@@ -101,7 +101,7 @@ class AutoStopsListener(sublime_plugin.EventListener):
         rangeEnd1 = len(latest_snapshot) - endDepth
         rangeEnd0 = len(recent_snapshot) - endDepth
         rangeLength = max(rangeEnd0, rangeEnd1) - rangeStart
-        ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], None, 0, 0, 0, 0, False, int((rangeLength) / 100000) + 3)
+        ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], 0, 0, 0, 0, False, int((rangeLength) / 100000) + 3)
         if len(ecs_result) > 2:
             sublime.error_message("'exclude_common_strings' timeout")
             print(*ecs_result)
