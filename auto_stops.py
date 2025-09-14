@@ -54,6 +54,16 @@ def set_last_activity_timestamp(view, timestamp=time.time()):
 def get_last_activity_timestamp(view):
     return next((d.get("timestamp") for d in AutoStopsListener.last_activity if d.get("view") == view), None)
 
+def set_periodic_token(view, token=str(uuid.uuid4())):
+    la_dict = next((d for d in AutoStopsListener.last_activity if d.get("view") == view), None)
+    if la_dict:
+        la_dict["token"] = token
+    else:
+        AutoStopsListener.last_activity.append({"view": view, "token": token})
+
+def get_periodic_token(view):
+    return next((d.get("token", "") for d in AutoStopsListener.last_activity if d.get("view") == view), "")
+
 
 class AutoStopsListener(sublime_plugin.EventListener):
     last_activity = []  # list of dicts: {"view": view, "timestamp": float}
@@ -92,7 +102,13 @@ class AutoStopsListener(sublime_plugin.EventListener):
                                 matched["pre_str"] = pre_text(view, region)
                                 matched["post_str"] = post_text(view, region)
                             else:
-                                self.stops.append({"region": key, "marks_index": index, "pre_str": pre_text(view, region), "post_str": post_text(view, region), "time": time.time()})
+                                matched = next((stop for stop in self.stops if stop.get("region") and abs(stop.get("region")[1] - stop.get("region")[0]) == region.end() - region.begin() and stop.get("post_str") == post_text(view, region)), None)
+                                if matched:
+                                    matched["region"] = key
+                                    matched["marks_index"] = index
+                                    matched["pre_str"] = pre_text(view, region)
+                                else:
+                                    self.stops.append({"region": key, "marks_index": index, "pre_str": pre_text(view, region), "post_str": post_text(view, region), "time": time.time()})
             view.settings().set("stops", self.stops)
 
     def check_idle(self, view):
@@ -162,20 +178,22 @@ class AutoStopsListener(sublime_plugin.EventListener):
             revive_this_plugin()
 
         # Run periodic idle checks
-        sublime.set_timeout_async(lambda: self.periodic(view), 1000)
+        set_periodic_token(view)
+        sublime.set_timeout_async(lambda: self.periodic(view, get_periodic_token(view)), 1000)
 
-    def periodic(self, view):
+    def periodic(self, view, token):
         # Called every 1s when view is active
-        if view.window() is None or view != view.window().active_view():
+        if token != get_periodic_token(view) or view.window() is None or view != view.window().active_view():
             return  # view closed or not in focus
         self.check_idle(view)
-        sublime.set_timeout_async(lambda: self.periodic(view), 1000)
+        sublime.set_timeout_async(lambda: self.periodic(view, token), 1000)
 
 
 class ClearAutoStopsCommand(sublime_plugin.TextCommand):
     def run(self, edit, **kwargs):
         self.view.settings().erase("stops")
         self.view.erase_regions("stopmarks")
+        sublime.status_message("Erased all auto-stops records.")
 
 class ShowAutoStopsCommand(sublime_plugin.TextCommand):
     def run(self, edit, **kwargs):
