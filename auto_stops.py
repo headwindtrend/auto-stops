@@ -1,11 +1,24 @@
 import sublime
 import sublime_plugin
+import uuid
 import time
+import sys
+sys.path.append(sublime.packages_path() + "/User")  # Ensure the User folder is in the path
+if sublime.packages_path():
+    import myLib
+else:
+    def revive_this_plugin():
+        def check():
+            if sublime.packages_path():
+                reload_this_plugin(this_plugin_name())
+            else:
+                sublime.set_timeout(check, 1000)  # Retry later
+        check()
+    revive_this_plugin()
 
 SETTINGS = sublime.load_settings("AutoStops.sublime-settings")
 IDLE_TIME = SETTINGS.get("idle_time", 2)           # seconds before we mark a stop
 MAX_STOPMARKS = SETTINGS.get("max_stopmarks", 30)  # cap on auto-stops
-CONTEXT_LEN = SETTINGS.get("context_len", 10)      # how many characters before and after the stop would be kept as the context_sense
 
 import os
 def this_plugin_name():
@@ -32,14 +45,6 @@ def reload_this_plugin(file_name, view=sublime.active_window().active_view()):
         sublime.set_timeout(lambda: finishes_the_save_after_open(), 1000)
 
 
-def pre_text(view, region):
-    context_sense = (region.begin() - CONTEXT_LEN, region.begin())
-    return repr(view.substr(sublime.Region(*context_sense)))
-
-def post_text(view, region):
-    context_sense = (region.end(), region.end() + CONTEXT_LEN)
-    return repr(view.substr(sublime.Region(*context_sense)))
-
 def region_key(region):
     """Serialize a Region to a tuple so we can compare and track them."""
     return [region.a, region.b]
@@ -53,6 +58,18 @@ def set_last_activity_timestamp(view, timestamp=time.time()):
 
 def get_last_activity_timestamp(view):
     return next((d.get("timestamp") for d in AutoStopsListener.last_activity if d.get("view") == view), None)
+
+def set_last_activity_snapshot(view, snapshot=None):
+    if not snapshot:
+        snapshot = view.substr(sublime.Region(0, view.size()))
+    la_dict = next((d for d in AutoStopsListener.last_activity if d.get("view") == view), None)
+    if la_dict:
+        la_dict["snapshot"] = snapshot
+    else:
+        AutoStopsListener.last_activity.append({"view": view, "snapshot": snapshot})
+
+def get_last_activity_snapshot(view):
+    return next((d.get("snapshot", "") for d in AutoStopsListener.last_activity if d.get("view") == view), "")
 
 def set_periodic_token(view, token=str(uuid.uuid4())):
     la_dict = next((d for d in AutoStopsListener.last_activity if d.get("view") == view), None)
@@ -74,42 +91,52 @@ class AutoStopsListener(sublime_plugin.EventListener):
         set_last_activity_timestamp(view)
 
     def on_modified_async(self, view):
-        # also reset timer if buffer changes
-        set_last_activity_timestamp(view)
+        # Push the activity timer far into future before updating the stops
+        set_last_activity_timestamp(view, time.time() + 999)
 
-        # Update stops in view settings from stopmarks which are supposed been automatically adjusted by sublime accordingly for the eventual modification that might have impacted the exact positions of some (if not all) of the stopmarks
-        stopmarks = view.get_regions("stopmarks")
-        if stopmarks:
+        latest_snapshot = view.substr(sublime.Region(0, view.size()))
+        recent_snapshot = get_last_activity_snapshot(view)
+        rangeStart = myLib.find_diffpoint(recent_snapshot, latest_snapshot)
+        endDepth = myLib.find_diffpoint(recent_snapshot, latest_snapshot, False)
+        rangeEnd1 = len(latest_snapshot) - endDepth
+        rangeEnd0 = len(recent_snapshot) - endDepth
+        rangeLength = max(rangeEnd0, rangeEnd1) - rangeStart
+        ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], None, 0, 0, 0, 0, False, int((rangeLength) / 100000) + 3)
+        if len(ecs_result) > 2:
+            sublime.error_message("'exclude_common_strings' timeout")
+            print(*ecs_result)
+            return
+        b4modi, afmodi = ecs_result[0], ecs_result[1]
+        # No difference found by ecs (perhaps user typed too fast that the system failed to catch up but that's okay. some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
+        #   for ecs without the "False" argument, check its results length against 0
+        if len(b4modi) == 0 == len(afmodi):  # this checking brings short-circuit for a typical scenario
+            return
+        # No difference found by ecs (perhaps user typed too fast that the system failed to catch up but that's okay. some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
+        #   for ecs with the "False" argument, check its results length against 2 and compare their detail pair by pair
+        if len(b4modi) == 2 == len(afmodi):  # this block of codes tries to block a typical scenario
+            all_the_same = True
+            for i, region in enumerate(b4modi):
+                if region[1] != region[0] or afmodi[i][1] != afmodi[i][0]:
+                    all_the_same = False
+                    break
+            if all_the_same:  # skip it as it needs no process
+                return
+        if len(b4modi) != len(afmodi):
+            sublime.error_message("unexpected scenario encountered: the total number of items in these", b4modi, afmodi, "lists are supposed equal but they are", len(b4modi), "and", len(afmodi), "respectively.")
+        else:
             self.stops = view.settings().get("stops", [])
-            for index, region in enumerate(stopmarks):
-                key = region_key(region)
-                matched = next((stop for stop in self.stops if stop.get("region") == key and stop.get("pre_str") == pre_text(view, region) and stop.get("post_str") == post_text(view, region)), None)
-                if matched:
-                    if matched["marks_index"] != index:
-                        matched["marks_index"] = index
-                else:
-                    matched = next((stop for stop in self.stops if stop.get("region") and abs(stop.get("region")[1] - stop.get("region")[0]) == region.end() - region.begin() and stop.get("pre_str") == pre_text(view, region) and stop.get("post_str") == post_text(view, region)), None)
-                    if matched:
-                        matched["region"] = key
-                        matched["marks_index"] = index
-                    else:
-                        matched = next((stop for stop in self.stops if stop.get("marks_index") == index and stop.get("pre_str") == pre_text(view, region) and stop.get("post_str") == post_text(view, region)), None)
-                        if matched:
-                            matched["region"] = key
-                        else:
-                            matched = next((stop for stop in self.stops if stop.get("region") == key and stop.get("marks_index") == index), None)
-                            if matched:
-                                matched["pre_str"] = pre_text(view, region)
-                                matched["post_str"] = post_text(view, region)
-                            else:
-                                matched = next((stop for stop in self.stops if stop.get("region") and abs(stop.get("region")[1] - stop.get("region")[0]) == region.end() - region.begin() and stop.get("post_str") == post_text(view, region)), None)
-                                if matched:
-                                    matched["region"] = key
-                                    matched["marks_index"] = index
-                                    matched["pre_str"] = pre_text(view, region)
-                                else:
-                                    self.stops.append({"region": key, "marks_index": index, "pre_str": pre_text(view, region), "post_str": post_text(view, region), "time": time.time()})
+            n = max(len(recent_snapshot), len(latest_snapshot))
+            for i, region in enumerate(b4modi):
+                net_change = max(afmodi[i][0], afmodi[i][1]) - max(region[0], region[1])
+                for stop in self.stops:
+                    if min(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < min((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
+                        stop["region"][0] += net_change
+                        stop["region"][1] += net_change
             view.settings().set("stops", self.stops)
+        set_last_activity_snapshot(view, latest_snapshot)
+
+        # Reset the activity timer as buffer changes are handled
+        set_last_activity_timestamp(view)
 
     def check_idle(self, view):
         """Check if caret stayed idle long enough; if so, record a stop."""
@@ -119,33 +146,17 @@ class AutoStopsListener(sublime_plugin.EventListener):
             sel = list(view.sel())
             if not sel:
                 return
-            stopmarks = view.get_regions("stopmarks")
             self.stops = view.settings().get("stops", [])
             for region in sel:
                 if region_key(region) not in [stop["region"] for stop in self.stops]:
                     key = region_key(region)
-
-                    # Add stopmark
-                    stopmarks.append(region)
-
-                    # Track in side list
-                    self.stops.append({"region": key, "marks_index": None, "pre_str": pre_text(view, region), "post_str": post_text(view, region), "time": time.time()})
+                    self.stops.append({"region": key, "time": time.time()})
 
             # Enforce cap
             while len(self.stops) > MAX_STOPMARKS:
-                oldest = self.stops.pop(0)["region"]
-                stopmarks = [r for r in stopmarks if region_key(r) != oldest]
-
-            # Update "regions" in Sublime
-            view.add_regions("stopmarks", stopmarks)
+                self.stops.pop(0)
 
             # Update stops in view settings
-            stopmarks = view.get_regions("stopmarks")
-            for index, region in enumerate(stopmarks):
-                key = region_key(region)
-                matched = next((stop for stop in self.stops if stop.get("region") == key), None)
-                if matched:
-                    matched["marks_index"] = index
             view.settings().set("stops", self.stops)
 
             # reset timer so we don’t immediately add again
@@ -155,19 +166,8 @@ class AutoStopsListener(sublime_plugin.EventListener):
         # Reset the activity timer when the view is activated
         set_last_activity_timestamp(view)
 
-        # Get stops of this view
-        self.stops = view.settings().get("stops", [])
-        # Update stopmarks
-        view.erase_regions("stopmarks")
-        stopmarks = []
-        if self.stops and len(self.stops):
-            for stop in self.stops:
-                stopmarks.append(sublime.Region(*stop["region"]))
-        if stopmarks and len(stopmarks):
-            view.add_regions("stopmarks", stopmarks)
-
         # Preventive measure
-        if IDLE_TIME == None:
+        if IDLE_TIME == None or not sublime.packages_path():
             def revive_this_plugin():
                 def check():
                     if sublime.packages_path():
@@ -176,6 +176,10 @@ class AutoStopsListener(sublime_plugin.EventListener):
                         sublime.set_timeout(check, 1000)  # Retry later
                 check()
             revive_this_plugin()
+
+        snapshot = view.substr(sublime.Region(0, view.size()))
+        if get_last_activity_snapshot(view) != snapshot:
+            set_last_activity_snapshot(view, snapshot)
 
         # Run periodic idle checks
         set_periodic_token(view)
@@ -192,7 +196,6 @@ class AutoStopsListener(sublime_plugin.EventListener):
 class ClearAutoStopsCommand(sublime_plugin.TextCommand):
     def run(self, edit, **kwargs):
         self.view.settings().erase("stops")
-        self.view.erase_regions("stopmarks")
         sublime.status_message("Erased all auto-stops records.")
 
 class ShowAutoStopsCommand(sublime_plugin.TextCommand):
@@ -237,7 +240,6 @@ class ShowAutoStopsCommand(sublime_plugin.TextCommand):
                 target = stops.pop(len(items)-i-1)["region"]
                 self.view.settings().set("stops", stops)
                 items.pop(i)
-                self.view.add_regions("stopmarks", [r for r in self.view.get_regions("stopmarks") if region_key(r) != target])
                 self.view.window().show_quick_panel(items, on_done, 1, i if i < len(items) else len(items) - 1, on_highlight)
             else:
                 self.view.window().show_quick_panel(items, on_done, 1, i, on_highlight)
