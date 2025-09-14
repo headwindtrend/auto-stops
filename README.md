@@ -18,7 +18,7 @@
   Clear all stops in the current view with a single command.
 
 - ⚙️ **Customizable**  
-  Configure idle timeout, maximum stored stops, and context size.
+  Configure idle timeout, and maximum stored stops.
 
 ---
 
