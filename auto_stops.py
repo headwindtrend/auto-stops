@@ -96,31 +96,36 @@ class AutoStopsListener(sublime_plugin.EventListener):
 
         latest_snapshot = view.substr(sublime.Region(0, view.size()))
         recent_snapshot = get_last_activity_snapshot(view)
+        # this checking brings short-circuit for the scenario "no recognized difference" (but why "no difference" can occur in on_modified? perhaps user typed too fast that the system failed to catch up (but that's okay, as the changes would just be accumulated in the upcoming on_modified events). some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
+        if latest_snapshot == recent_snapshot:
+            return
         rangeStart = myLib.find_diffpoint(recent_snapshot, latest_snapshot)
         endDepth = myLib.find_diffpoint(recent_snapshot, latest_snapshot, False)
+        if rangeStart + endDepth > len(latest_snapshot) or rangeStart + endDepth > len(recent_snapshot):
+            # adjust the result for a typical scenario when the immediate pre-text/post-text (of the modification) is identical
+            # the known example of such scenario is "adding a new line between 2 existing lines" which will insert a newline character immediately after an existing newline character that these 2 consecutive newline characters could cause an overlap counting by 'the collaboration of "find_diffpoint forward" and "find_diffpoint backward"', hence the overlapping must be rectified.
+            endDepth -= (rangeStart + endDepth - len(latest_snapshot)) + (rangeStart + endDepth - len(recent_snapshot))
         rangeEnd1 = len(latest_snapshot) - endDepth
         rangeEnd0 = len(recent_snapshot) - endDepth
         rangeLength = max(rangeEnd0, rangeEnd1) - rangeStart
-        ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], 0, 0, 0, 0, False, int((rangeLength) / 100000) + 3)
+        ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], 0, 0, 0, 0, False, int(rangeLength / 100000) + 3)
         if len(ecs_result) > 2:
             sublime.error_message("'exclude_common_strings' timeout")
             print(*ecs_result)
             return
         b4modi, afmodi = ecs_result[0], ecs_result[1]
-        # No difference found by ecs (perhaps user typed too fast that the system failed to catch up but that's okay. some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
-        #   for ecs without the "False" argument, check its results length against 0
-        if len(b4modi) == 0 == len(afmodi):  # this checking brings short-circuit for a typical scenario
-            return
-        # No difference found by ecs (perhaps user typed too fast that the system failed to catch up but that's okay. some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
-        #   for ecs with the "False" argument, check its results length against 2 and compare their detail pair by pair
-        if len(b4modi) == 2 == len(afmodi):  # this block of codes tries to block a typical scenario
-            all_the_same = True
-            for i, region in enumerate(b4modi):
-                if region[1] != region[0] or afmodi[i][1] != afmodi[i][0]:
-                    all_the_same = False
-                    break
-            if all_the_same:  # skip it as it needs no process
-                return
+        # for ecs without the "False" argument, check its results length against 0
+        # if len(b4modi) == 0 == len(afmodi):  # this checking brings short-circuit for a typical scenario
+        #     return
+        # for ecs with the "False" argument, check its results length against 2 and compare their detail pair by pair
+        # if len(b4modi) == 2 == len(afmodi):  # this block of codes tries to block a typical scenario
+        #     all_the_same = True
+        #     for i, region in enumerate(b4modi):
+        #         if region[1] != region[0] or afmodi[i][1] != afmodi[i][0]:
+        #             all_the_same = False
+        #             break
+        #     if all_the_same:  # skip it as it needs no process
+        #         return
         if len(b4modi) != len(afmodi):
             sublime.error_message("unexpected scenario encountered: the total number of items in these", b4modi, afmodi, "lists are supposed equal but they are", len(b4modi), "and", len(afmodi), "respectively.")
         else:
