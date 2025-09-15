@@ -132,11 +132,16 @@ class AutoStopsListener(sublime_plugin.EventListener):
             self.stops = view.settings().get("stops", [])
             n = max(len(recent_snapshot), len(latest_snapshot))
             for i, region in enumerate(b4modi):
-                net_change = max(afmodi[i][0], afmodi[i][1]) - max(region[0], region[1])
-                for stop in self.stops:
-                    if min(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < min((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
-                        stop["region"][0] += net_change
-                        stop["region"][1] += net_change
+                net_change0 = min(afmodi[i][0], afmodi[i][1]) - min(region[0], region[1])
+                net_change1 = max(afmodi[i][0], afmodi[i][1]) - max(region[0], region[1])
+                if net_change0 or net_change1:
+                    for stop in self.stops:
+                        if min(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < max(region[0], region[1]):
+                            stop["region"][0] += net_change0
+                            stop["region"][1] += net_change0
+                        if max(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < min((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
+                            stop["region"][0] += net_change1
+                            stop["region"][1] += net_change1
             view.settings().set("stops", self.stops)
         set_last_activity_snapshot(view, latest_snapshot)
 
