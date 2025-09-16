@@ -107,7 +107,7 @@ class AutoStopsListener(sublime_plugin.EventListener):
             if rangeStart + endDepth > len(latest_snapshot) or rangeStart + endDepth > len(recent_snapshot):
                 # adjust the result for a typical scenario when the immediate pre-text/post-text (of the modification) is identical
                 # the known example of such scenario is "adding a new line between 2 existing lines" which will insert a newline character immediately after an existing newline character that these 2 consecutive newline characters could cause an overlap counting by 'the collaboration of "find_diffpoint forward" and "find_diffpoint backward"', hence the overlapping must be rectified.
-                endDepth -= (rangeStart + endDepth - len(latest_snapshot)) + (rangeStart + endDepth - len(recent_snapshot))
+                endDepth -= max((rangeStart + endDepth - len(latest_snapshot)), (rangeStart + endDepth - len(recent_snapshot)), 0)
             rangeEnd1 = len(latest_snapshot) - endDepth
             rangeEnd0 = len(recent_snapshot) - endDepth
             rangeLength = max(rangeEnd0, rangeEnd1) - rangeStart
