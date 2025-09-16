@@ -1,5 +1,6 @@
 import sublime
 import sublime_plugin
+import threading
 import uuid
 import time
 import sys
@@ -83,6 +84,7 @@ def get_periodic_token(view):
 
 
 class AutoStopsListener(sublime_plugin.EventListener):
+    lock = threading.Lock()
     last_activity = []  # list of dicts: {"view": view, "timestamp": float}
     stops = []  # list of dicts: {"region": [a, b], "time": float}
 
@@ -91,88 +93,102 @@ class AutoStopsListener(sublime_plugin.EventListener):
         set_last_activity_timestamp(view)
 
     def on_modified_async(self, view):
-        # Push the activity timer far into future before updating the stops
-        set_last_activity_timestamp(view, time.time() + 999)
+        with self.lock:
+            # Push the activity timer far into future before updating the stops
+            set_last_activity_timestamp(view, time.time() + 999)
 
-        latest_snapshot = view.substr(sublime.Region(0, view.size()))
-        recent_snapshot = get_last_activity_snapshot(view)
-        # this checking brings short-circuit for the scenario "no recognized difference" (but why "no difference" can occur in on_modified? perhaps user typed too fast that the system failed to catch up (but that's okay, as the changes would just be accumulated in the upcoming on_modified events). some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
-        if latest_snapshot == recent_snapshot:
-            return
-        rangeStart = myLib.find_diffpoint(recent_snapshot, latest_snapshot)
-        endDepth = myLib.find_diffpoint(recent_snapshot, latest_snapshot, False)
-        if rangeStart + endDepth > len(latest_snapshot) or rangeStart + endDepth > len(recent_snapshot):
-            # adjust the result for a typical scenario when the immediate pre-text/post-text (of the modification) is identical
-            # the known example of such scenario is "adding a new line between 2 existing lines" which will insert a newline character immediately after an existing newline character that these 2 consecutive newline characters could cause an overlap counting by 'the collaboration of "find_diffpoint forward" and "find_diffpoint backward"', hence the overlapping must be rectified.
-            endDepth -= (rangeStart + endDepth - len(latest_snapshot)) + (rangeStart + endDepth - len(recent_snapshot))
-        rangeEnd1 = len(latest_snapshot) - endDepth
-        rangeEnd0 = len(recent_snapshot) - endDepth
-        rangeLength = max(rangeEnd0, rangeEnd1) - rangeStart
-        ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], 0, 0, 0, 0, False, int(rangeLength / 100000) + 3)
-        if len(ecs_result) > 2:
-            sublime.error_message("'exclude_common_strings' timeout")
-            print(*ecs_result)
-            return
-        b4modi, afmodi = ecs_result[0], ecs_result[1]
-        # for ecs without the "False" argument, check its results length against 0
-        # if len(b4modi) == 0 == len(afmodi):  # this checking brings short-circuit for a typical scenario
-        #     return
-        # for ecs with the "False" argument, check its results length against 2 and compare their detail pair by pair
-        # if len(b4modi) == 2 == len(afmodi):  # this block of codes tries to block a typical scenario
-        #     all_the_same = True
-        #     for i, region in enumerate(b4modi):
-        #         if region[1] != region[0] or afmodi[i][1] != afmodi[i][0]:
-        #             all_the_same = False
-        #             break
-        #     if all_the_same:  # skip it as it needs no process
-        #         return
-        if len(b4modi) != len(afmodi):
-            sublime.error_message("unexpected scenario encountered: the total number of items in these", b4modi, afmodi, "lists are supposed equal but they are", len(b4modi), "and", len(afmodi), "respectively.")
-        else:
-            self.stops = view.settings().get("stops", [])
-            n = max(len(recent_snapshot), len(latest_snapshot)) + 1
-            for i, region in enumerate(b4modi):
-                net_change0 = min(afmodi[i][0], afmodi[i][1]) - min(region[0], region[1])
-                net_change1 = max(afmodi[i][0], afmodi[i][1]) - max(region[0], region[1])
-                if net_change0 or net_change1:
-                    for stop in self.stops:
-                        if min(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < max(region[0], region[1]):
-                            stop["region"][0] += net_change0
-                            stop["region"][1] += net_change0
-                        if max(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < min((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
-                            stop["region"][0] += net_change1
-                            stop["region"][1] += net_change1
-            view.settings().set("stops", self.stops)
-        set_last_activity_snapshot(view, latest_snapshot)
+            latest_snapshot = view.substr(sublime.Region(0, view.size()))
+            recent_snapshot = get_last_activity_snapshot(view)
+            # this checking brings short-circuit for the scenario "no recognized difference" (but why "no difference" can occur in on_modified? perhaps user typed too fast that the system failed to catch up (but that's okay, as the changes would just be accumulated in the upcoming on_modified events). some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
+            if latest_snapshot == recent_snapshot:
+                return
+            rangeStart = myLib.find_diffpoint(recent_snapshot, latest_snapshot)
+            endDepth = myLib.find_diffpoint(recent_snapshot, latest_snapshot, False)
+            if rangeStart + endDepth > len(latest_snapshot) or rangeStart + endDepth > len(recent_snapshot):
+                # adjust the result for a typical scenario when the immediate pre-text/post-text (of the modification) is identical
+                # the known example of such scenario is "adding a new line between 2 existing lines" which will insert a newline character immediately after an existing newline character that these 2 consecutive newline characters could cause an overlap counting by 'the collaboration of "find_diffpoint forward" and "find_diffpoint backward"', hence the overlapping must be rectified.
+                endDepth -= (rangeStart + endDepth - len(latest_snapshot)) + (rangeStart + endDepth - len(recent_snapshot))
+            rangeEnd1 = len(latest_snapshot) - endDepth
+            rangeEnd0 = len(recent_snapshot) - endDepth
+            rangeLength = max(rangeEnd0, rangeEnd1) - rangeStart
+            ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], 0, 0, 0, 0, False, int(rangeLength / 100000) + 3)
+            if len(ecs_result) > 2:
+                sublime.error_message("'exclude_common_strings' timeout")
+                print(*ecs_result)
+                return
+            b4modi, afmodi = ecs_result[0], ecs_result[1]
+            # for ecs without the "False" argument, check its results length against 0
+            # if len(b4modi) == 0 == len(afmodi):  # this checking brings short-circuit for a typical scenario
+            #     return
+            # for ecs with the "False" argument, check its results length against 2 and compare their detail pair by pair
+            # if len(b4modi) == 2 == len(afmodi):  # this block of codes tries to block a typical scenario
+            #     all_the_same = True
+            #     for i, region in enumerate(b4modi):
+            #         if region[1] != region[0] or afmodi[i][1] != afmodi[i][0]:
+            #             all_the_same = False
+            #             break
+            #     if all_the_same:  # skip it as it needs no process
+            #         return
+            if len(b4modi) != len(afmodi):
+                sublime.error_message("unexpected scenario encountered: the total number of items in these", b4modi, afmodi, "lists are supposed equal but they are", len(b4modi), "and", len(afmodi), "respectively.")
+            else:
+                self.stops = view.settings().get("stops", [])
+                n = max(len(recent_snapshot), len(latest_snapshot)) + 1
+                for i, region in enumerate(b4modi):
+                    net_change0 = min(afmodi[i][0], afmodi[i][1]) - min(region[0], region[1])
+                    net_change1 = max(afmodi[i][0], afmodi[i][1]) - max(region[0], region[1])
+                    if net_change0 or net_change1:
+                        for stop in self.stops:
+                            if min(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < max(region[0], region[1]):
+                                stop["region"][0] += net_change0
+                                stop["region"][1] += net_change0
+                            if max(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < min((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
+                                stop["region"][0] += net_change1
+                                stop["region"][1] += net_change1
+                view.settings().set("stops", self.stops)
+            set_last_activity_snapshot(view, latest_snapshot)
 
         # Reset the activity timer as buffer changes are handled
         set_last_activity_timestamp(view)
 
+    def on_pre_close(self, view):
+        AutoStopsListener.last_activity = [d for d in AutoStopsListener.last_activity if d.get("view") != view]
+
     def check_idle(self, view):
-        """Check if caret stayed idle long enough; if so, record a stop."""
-        now = time.time()
-        last_activity = get_last_activity_timestamp(view)
-        if last_activity and (now - last_activity) >= IDLE_TIME:
-            sel = list(view.sel())
-            if not sel:
-                return
-            self.stops = view.settings().get("stops", [])
-            for region in sel:
-                if region_key(region) not in [stop["region"] for stop in self.stops]:
-                    key = region_key(region)
-                    self.stops.append({"region": key, "time": time.time()})
+        if not self.lock.acquire(blocking=False):  # don’t wait
+            # Someone else (on_modified) is running, so skip quietly
+            return
 
-            # Enforce cap
-            while len(self.stops) > MAX_STOPMARKS:
-                self.stops.pop(0)
+        try:
+            """Check if caret stayed idle long enough; if so, record a stop."""
+            now = time.time()
+            last_activity = get_last_activity_timestamp(view)
+            if last_activity and (now - last_activity) >= IDLE_TIME:
+                sel = list(view.sel())
+                if not sel:
+                    return
+                self.stops = view.settings().get("stops", [])
+                for region in sel:
+                    if region_key(region) not in [stop["region"] for stop in self.stops]:
+                        key = region_key(region)
+                        self.stops.append({"region": key, "time": time.time()})
+    
+                # Enforce cap
+                while len(self.stops) > MAX_STOPMARKS:
+                    self.stops.pop(0)
+    
+                # Update stops in view settings
+                view.settings().set("stops", self.stops)
+    
+                # reset timer so we don’t immediately add again
+                set_last_activity_timestamp(view, now + 999)  # push far into future
 
-            # Update stops in view settings
-            view.settings().set("stops", self.stops)
-
-            # reset timer so we don’t immediately add again
-            set_last_activity_timestamp(view, now + 999)  # push far into future
+        finally:
+            self.lock.release()
 
     def on_activated_async(self, view):
+        if not view or not view.window() or view != view.window().active_view():
+            return
         # Reset the activity timer when the view is activated
         set_last_activity_timestamp(view)
 
