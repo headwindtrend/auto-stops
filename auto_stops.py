@@ -130,7 +130,7 @@ class AutoStopsListener(sublime_plugin.EventListener):
             sublime.error_message("unexpected scenario encountered: the total number of items in these", b4modi, afmodi, "lists are supposed equal but they are", len(b4modi), "and", len(afmodi), "respectively.")
         else:
             self.stops = view.settings().get("stops", [])
-            n = max(len(recent_snapshot), len(latest_snapshot))
+            n = max(len(recent_snapshot), len(latest_snapshot)) + 1
             for i, region in enumerate(b4modi):
                 net_change0 = min(afmodi[i][0], afmodi[i][1]) - min(region[0], region[1])
                 net_change1 = max(afmodi[i][0], afmodi[i][1]) - max(region[0], region[1])
