@@ -89,10 +89,15 @@ class AutoStopsListener(sublime_plugin.EventListener):
     stops = []  # list of dicts: {"region": [a, b], "time": float}
 
     def on_selection_modified_async(self, view):
+        if not view or not view.window() or view != view.window().active_view():
+            return
         # Reset the activity timer whenever caret/selection changes
         set_last_activity_timestamp(view)
 
     def on_modified_async(self, view):
+        if not view or not view.window() or view != view.window().active_view():
+            return
+
         with self.lock:
             # Push the activity timer far into future before updating the stops
             set_last_activity_timestamp(view, time.time() + 999)
