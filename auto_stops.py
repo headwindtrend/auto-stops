@@ -262,6 +262,7 @@ class ShowAutoStopsCommand(sublime_plugin.TextCommand):
                 self.view.erase_regions("focusedRegion")
                 self.view.sel().clear()
                 self.view.sel().add_all(self.saved_selection)
+                self.view.hide_popup()
                 return
             yesno = sublime.yes_no_cancel_dialog("[OK] to accept what is selected\n\n[Exclude] to take this one off the list\n\n[Cancel] to dismiss this dialog and stay with the panel", "OK", "Exclude")
             if yesno == sublime.DIALOG_YES:
