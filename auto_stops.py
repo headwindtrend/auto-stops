@@ -267,6 +267,8 @@ class ShowAutoStopsCommand(sublime_plugin.TextCommand):
             if yesno == sublime.DIALOG_YES:
                 self.view.erase_regions("showScope")
                 self.view.erase_regions("focusedRegion")
+                self.view.sel().clear()
+                self.view.sel().add(sublime.Region(*stops[len(items)-i-1]["region"]))
             elif yesno == sublime.DIALOG_NO:
                 target = stops.pop(len(items)-i-1)["region"]
                 self.view.settings().set("stops", stops)
@@ -278,9 +280,12 @@ class ShowAutoStopsCommand(sublime_plugin.TextCommand):
         def on_highlight(i):
             r = sublime.Region(*stops[len(items)-i-1]["region"])
             self.view.sel().clear()
-            self.view.sel().add(r)
+            self.view.sel().add(r.begin())
             self.view.show_at_center(r)
             self.view.add_regions("focusedRegion", [r], "string", "dot")
+            self.view.hide_popup()
+            if r.end() == r.begin():
+                self.view.show_popup("<div style='font-size:12;background-color:yellow;color:black'>↑ Text Cursor")
 
         self.saved_selection = list(self.view.sel())
         self.view.add_regions("showScope", [sublime.Region(*stop.get("region")) for stop in stops], "string", "", sublime.DRAW_NO_FILL)
