@@ -102,6 +102,19 @@ class AutoStopsListener(sublime_plugin.EventListener):
             # Push the activity timer far into future before updating the stops
             set_last_activity_timestamp(view, time.time() + 999)
 
+            if view.settings().get("drag_and_drop"):
+                accumu = -1
+                for region in self.saved_selection:  # drag-and-drop regions before the move
+                    net_change = view.sel()[0].begin() + accumu + 1 - region.begin()  # after-position minus before-position
+                    for stop in self.stops:
+                        if region.begin() <= min(stop.get("region")[0], stop.get("region")[1]) and max(stop.get("region")[0], stop.get("region")[1]) <= region.end():  # stop-region resided in the drag-and-drop regions
+                            if not (stop.get("region")[1] == stop.get("region")[0] and (region.begin() == stop.get("region")[0] or stop.get("region")[0] == region.end())):  # but not fell in these 2 edge cases
+                                stop["region"][0] += net_change
+                                stop["region"][1] += net_change
+                                stop["dnd_flag"] = True
+                    accumu += len(region) + 1
+                view.settings().set("stops", self.stops)
+
             latest_snapshot = view.substr(sublime.Region(0, view.size()))
             recent_snapshot = get_last_activity_snapshot(view)
             # this checking brings short-circuit for the scenario "no recognized difference" (but why "no difference" can occur in on_modified? perhaps user typed too fast that the system failed to catch up (but that's okay, as the changes would just be accumulated in the upcoming on_modified events). some other scenarios may also cause this, such as, `undo` which seems to trigger on_modified one extra time.)
@@ -116,7 +129,10 @@ class AutoStopsListener(sublime_plugin.EventListener):
             rangeEnd1 = len(latest_snapshot) - endDepth
             rangeEnd0 = len(recent_snapshot) - endDepth
             rangeLength = max(rangeEnd0, rangeEnd1) - rangeStart
-            ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], 0, 0, 0, 0, False, int(rangeLength / 100000) + 3)
+            dnd = view.settings().get("drag_and_drop")
+            ecs_result = myLib.exclude_common_strings(recent_snapshot[rangeStart:rangeEnd0], latest_snapshot[rangeStart:rangeEnd1], a_base=rangeStart, b_base=rangeStart, v2_only=dnd, final=False, max_tolerence=int(rangeLength / 100000) + 3)
+            if dnd:
+                view.settings().erase("drag_and_drop")
             if len(ecs_result) > 2:
                 sublime.error_message("'exclude_common_strings' timeout")
                 print(*ecs_result)
@@ -144,10 +160,13 @@ class AutoStopsListener(sublime_plugin.EventListener):
                     net_change = max(afmodi[i][0], afmodi[i][1]) - max(region[0], region[1])
                     if net_change:
                         for j, stop in enumerate(self.stops):
-                            if min(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) - rangeStart < min((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
-                                drifted_stops[j][1 if stop.get("region")[1] < stop.get("region")[0] else 0] += net_change
-                            if max(region[0], region[1]) <= max(stop.get("region")[0], stop.get("region")[1]) - rangeStart < max((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
-                                drifted_stops[j][0 if stop.get("region")[1] < stop.get("region")[0] else 1] += net_change
+                            if stop.get("dnd_flag"):
+                                del stop["dnd_flag"]
+                            else:
+                                if min(region[0], region[1]) <= min(stop.get("region")[0], stop.get("region")[1]) < min((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
+                                    drifted_stops[j][1 if stop.get("region")[1] < stop.get("region")[0] else 0] += net_change
+                                if max(region[0], region[1]) <= max(stop.get("region")[0], stop.get("region")[1]) < max((b4modi[i+1:]+[(n, n)])[0][0], (b4modi[i+1:]+[(n, n)])[0][1]):
+                                    drifted_stops[j][0 if stop.get("region")[1] < stop.get("region")[0] else 1] += net_change
                 for j, stop in enumerate(self.stops):
                     stop["region"] = drifted_stops[j][:]
                 view.settings().set("stops", self.stops)
@@ -176,15 +195,16 @@ class AutoStopsListener(sublime_plugin.EventListener):
                 for region in sel:
                     if region_key(region) not in [stop["region"] for stop in self.stops]:
                         key = region_key(region)
+
                         self.stops.append({"region": key, "time": time.time()})
-    
+
                 # Enforce cap
                 while len(self.stops) > MAX_STOPMARKS:
                     self.stops.pop(0)
-    
+
                 # Update stops in view settings
                 view.settings().set("stops", self.stops)
-    
+
                 # reset timer so we don’t immediately add again
                 set_last_activity_timestamp(view, now + 999)  # push far into future
 
@@ -222,6 +242,20 @@ class AutoStopsListener(sublime_plugin.EventListener):
             return  # view closed or not in focus
         self.check_idle(view)
         sublime.set_timeout_async(lambda: self.periodic(view, token), 1000)
+
+    def on_text_command(self, view, command_name, args):
+        if command_name == "my_drag_select_my" or command_name == "drag_select":
+            self.drag_select_view = view
+            self.saved_selection = list(view.sel())
+        else:
+            self.drag_select_view = None
+
+    def on_post_text_command(self, view, command_name, args):
+        if command_name == "my_drag_select_my" or command_name == "drag_select":
+            if view == self.drag_select_view:
+                if not args.get("additive"):
+                    view.settings().set("drag_and_drop", True)
+            self.drag_select_view = None
 
 
 class ClearAutoStopsCommand(sublime_plugin.TextCommand):
@@ -281,7 +315,6 @@ class ShowAutoStopsCommand(sublime_plugin.TextCommand):
         def on_highlight(i):
             r = sublime.Region(*stops[len(items)-i-1]["region"])
             self.view.sel().clear()
-            self.view.sel().add(r.begin())
             self.view.show_at_center(r)
             self.view.add_regions("focusedRegion", [r], "string", "dot")
             self.view.hide_popup()
