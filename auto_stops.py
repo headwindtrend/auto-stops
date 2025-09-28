@@ -134,6 +134,9 @@ class AutoStopsListener(sublime_plugin.EventListener):
                 sel = list(view.sel())
                 if not sel:
                     return
+                if sel[0].begin() == view.settings().get("skip_auto_stops") == sel[0].end():
+                    view.settings().erase("skip_auto_stops")
+                    return
                 stopmarks = view.get_regions("stopmarks")
                 self.stops = view.settings().get("stops", [])
                 for region in sel:
@@ -268,6 +271,7 @@ class ShowAutoStopsCommand(sublime_plugin.TextCommand):
         def on_highlight(i):
             r = sublime.Region(*stops[len(items)-i-1]["region"])
             self.view.sel().clear()
+            self.view.settings().set("skip_auto_stops", r.begin())
             self.view.sel().add(r.begin())
             self.view.show_at_center(r)
             self.view.add_regions("focusedRegion", [r], "string", "dot")
